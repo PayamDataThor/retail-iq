@@ -111,6 +111,32 @@ meaningless.
 
 ---
 
+## Genie Space API — serialized_space format
+
+The `POST /api/2.0/genie/spaces` endpoint requires `serialized_space` as a JSON **string**
+(not object). Rules discovered empirically:
+
+```python
+serialized_space = json.dumps({
+    "version": 2,                        # must be exactly 2
+    "config": {
+        "sample_questions": [
+            {"id": "<32-char hex>", "question": ["text"]}   # question is an ARRAY
+        ]
+    },
+    "data_sources": {
+        "tables": [
+            {"identifier": "catalog.schema.table"}   # field is "identifier", NOT "table_identifier"
+        ]                                             # must be sorted alphabetically by identifier
+    }
+}, separators=(',', ':'))                            # compact JSON works; spaces also OK
+```
+
+Use `w.api_client.do("GET", "/api/2.0/genie/spaces")` to list spaces — response key is
+`"spaces"` (not `"genie_spaces"`).
+
+---
+
 ## Deployment
 
 ```bash

@@ -2,7 +2,8 @@
 
 A production-grade retail analytics platform built on Databricks, implementing a
 **Bronze → Silver → Gold medallion architecture** with RFM customer segmentation,
-store KPI aggregation, and a live Postgres serving layer via Lakebase.
+store KPI aggregation, Unity Catalog governance, AI/BI self-serve analytics, and a
+live Postgres serving layer via Lakebase.
 
 ---
 
@@ -20,7 +21,7 @@ flowchart TD
     end
 
     subgraph SILVER["Silver Layer — Validated & Enriched"]
-        S1[(silver_customers)]
+        S1[(silver_customers\n🏷 PII tagged)]
         S2[(silver_products)]
         S3[(silver_stores)]
         S4[(silver_orders)]
@@ -31,20 +32,24 @@ flowchart TD
         G1[(gold_revenue_by\ncategory_month)]
         G2[(gold_store_kpis)]
         G3[(gold_product\nperformance)]
-        G4[(gold_customer_rfm)]
+        G4[(gold_customer_rfm\n🔒 column mask)]
     end
 
     subgraph SERVE["Serving Layer"]
         PG[(Lakebase\nPostgres)]
-        VIZ[05_visualization\nCharts]
-        DASH[09_dashboard\nKPI Dashboard]
+        APP[Streamlit\nDatabricks App]
+        DASH[AI/BI Dashboard\nLakeview]
+        GENIE[Genie Space\nNL → SQL]
+        MON[Lakehouse Monitor\nDrift Detection]
     end
 
     INGEST -->|DQ filter + MERGE| SILVER
     SILVER -->|enriched_items view| GOLD
     GOLD --> PG
-    GOLD --> VIZ
+    PG --> APP
     GOLD --> DASH
+    GOLD --> GENIE
+    GOLD --> MON
 ```
 
 ---
@@ -57,16 +62,18 @@ flowchart LR
     gen --> silver([03_silver_transforms])
     silver --> gold([04_gold_analytics])
     gold --> viz([05_visualization])
-    gold --> sync([06_lakebase_sync])
-    sync --> tests([08_run_tests])
-    gold --> tests
+    gold --> tests([08_run_tests])
     gold --> dash([09_dashboard])
+    gold --> aibi([11_aibi_setup])
+    tests --> sync([06_lakebase_sync])
 
     style setup fill:#e8f4f8
     style tests fill:#f0f8e8
-    style dash fill:#f8f4e8
+    style sync fill:#f8e8e8
+    style aibi fill:#f5f0ff
 ```
 
+`run_tests` is a quality gate — `lakebase_sync` only runs after all integration tests pass.
 A **separate nightly job** runs `07_maintenance` (OPTIMIZE + ANALYZE) off the critical path.
 
 ---
@@ -152,8 +159,7 @@ flowchart TD
 ```
 
 Scores are computed with `NTILE(5)` window functions — relative to the full customer
-base, not absolute thresholds. Big Spenders is evaluated **before** At Risk so a
-dormant high-value customer is retained in a valuable segment.
+base, not absolute thresholds.
 
 ---
 
@@ -165,17 +171,24 @@ retail-iq/
 ├── pytest.ini
 ├── notebooks/
 │   ├── 00_utils.py                 # Shared: tbl(), upsert(), LOAD_TS
-│   ├── 01_setup.py                 # Schema creation, CDF enable
-│   ├── 02_data_generation.py       # Synthetic Bronze data (Faker)
+│   ├── 01_setup.py                 # Schema creation, CDF enable, mask_pii function, group
+│   ├── 02_data_generation.py       # Synthetic Bronze data (Faker); unit_price from catalog
 │   ├── 03_silver_transforms.py     # DQ filter → Silver (MERGE + Liquid Cluster)
-│   ├── 04_gold_analytics.py        # Aggregations → Gold (enriched_items view)
-│   ├── 05_visualization.py         # Matplotlib charts → /tmp/
-│   ├── 06_lakebase_sync.py         # Gold → Lakebase Postgres (staging rename)
+│   ├── 04_gold_analytics.py        # Aggregations → Gold + UC governance + Lakehouse Monitor
+│   ├── 05_visualization.py         # Matplotlib charts
+│   ├── 06_lakebase_sync.py         # Gold → Lakebase Postgres (staging rename, zero downtime)
 │   ├── 07_maintenance.py           # Nightly OPTIMIZE + ANALYZE (off critical path)
-│   ├── 08_run_tests.py             # Spark integration tests (final pipeline task)
-│   └── 09_dashboard.py             # KPI dashboard + solution evaluation
+│   ├── 08_run_tests.py             # Spark integration tests (quality gate before sync)
+│   ├── 09_dashboard.py             # KPI dashboard + solution evaluation
+│   ├── 10_lakebase_grant_app.py    # One-time: grant app SP Postgres access
+│   └── 11_aibi_setup.py            # AI/BI Dashboard (Lakeview) + Genie Space creation
+├── apps/
+│   └── retail_insights/
+│       ├── app.py                  # Streamlit app — connects via Lakebase secret PAT
+│       ├── app.yml                 # Minimal: command: [streamlit, run, app.py]
+│       └── requirements.txt
 ├── resources/
-│   ├── retail_pipeline_job.yml     # Main pipeline DAG
+│   ├── retail_pipeline_job.yml     # Main pipeline DAG (8 tasks)
 │   └── retail_maintenance_job.yml  # Nightly maintenance schedule
 ├── src/
 │   └── retail_iq/
@@ -214,7 +227,7 @@ databricks bundle deploy --target prod
 ### Run the pipeline
 
 ```bash
-# Full pipeline run (dev)
+# Full pipeline run (dev) — all 8 tasks
 databricks bundle run retail_pipeline
 
 # Individual task
@@ -236,15 +249,92 @@ pytest -v
 | # | Notebook | Runtime | Purpose |
 |---|---|---|---|
 | 00 | `00_utils` | — | Shared `tbl()`, `upsert()`, `LOAD_TS` via `%run` |
-| 01 | `01_setup` | ~30s | Schema creation, CDF enable for Gold tables |
+| 01 | `01_setup` | ~30s | Schema, CDF enable, `mask_pii` function, `retail_iq_analysts` group |
 | 02 | `02_data_generation` | ~2 min | Generate 1K customers, 100 products, 10K orders |
 | 03 | `03_silver_transforms` | ~3 min | DQ filter, dedup, `line_total` derivation, MERGE |
-| 04 | `04_gold_analytics` | ~2 min | 4 Gold tables, `enriched_items` shared view |
-| 05 | `05_visualization` | ~1 min | 5 Matplotlib charts saved to `/tmp/` |
-| 06 | `06_lakebase_sync` | ~3 min | toPandas → Postgres staging/rename |
+| 04 | `04_gold_analytics` | ~2 min | 4 Gold tables, `enriched_items` view, UC governance, Lakehouse Monitor |
+| 05 | `05_visualization` | ~1 min | 5 Matplotlib charts |
+| 06 | `06_lakebase_sync` | ~3 min | Gold → Lakebase staging/atomic rename (zero downtime) |
 | 07 | `07_maintenance` | ~5 min | Nightly OPTIMIZE + ANALYZE (separate schedule) |
-| 08 | `08_run_tests` | ~3 min | Integration tests against live tables |
+| 08 | `08_run_tests` | ~3 min | Integration tests — quality gate before Lakebase sync |
 | 09 | `09_dashboard` | ~2 min | KPI dashboard + solution evaluation |
+| 10 | `10_lakebase_grant_app.py` | one-time | Grant app service principal Postgres access |
+| 11 | `11_aibi_setup` | ~1 min | Lakeview AI/BI Dashboard + Genie Space |
+
+---
+
+## Self-Serve Analytics
+
+### AI/BI Dashboard (Lakeview)
+
+Created automatically by `11_aibi_setup`. Three pages backed by live Gold tables:
+
+| Page | Widgets |
+|---|---|
+| Revenue | Bar chart — revenue by category × month; Pie — revenue share by category |
+| Stores | Horizontal bar — top stores by revenue, colored by region |
+| Customers | Bar — customers by RFM segment; Bar — avg lifetime spend by segment |
+
+### Genie Space
+
+Natural-language interface over all four Gold tables. Ask questions in plain English:
+
+- *"Which product category had the highest revenue last month?"*
+- *"How many Champion customers do we have and what is their average spend?"*
+- *"Which stores have the highest average basket size?"*
+- *"What percentage of customers are At Risk?"*
+
+Pre-loaded with 7 curated sample questions visible to all users on entry.
+
+---
+
+## Unity Catalog Governance
+
+| Feature | Where applied | Detail |
+|---|---|---|
+| `mask_pii` function | `main.retail_iq` schema | Members of `retail_iq_analysts` group (or admins) see real values; everyone else sees `****` |
+| PII tags | `silver_customers.email`, `silver_customers.full_name` | Tags enable lineage and discovery in the UC data catalog |
+| Column masks | `gold_customer_rfm.email`, `gold_customer_rfm.full_name` | Masks on the analyst-facing Gold layer (not Silver — Silver is pipeline-internal) |
+| Table comments | All four Gold tables | Searchable descriptions in the UC catalog |
+| Column comments | `gold_customer_rfm` key columns | Definitions for `rfm_segment`, `rfm_score`, `recency_days`, `frequency`, `monetary` |
+| Change Data Feed | All Gold tables | Required for Lakebase Synced Tables continuous sync |
+
+To grant analyst access:
+```sql
+ALTER GROUP retail_iq_analysts ADD USER <user@example.com>;
+```
+
+### Lakehouse Monitor
+
+`04_gold_analytics` attaches a snapshot monitor to `gold_customer_rfm`. It generates:
+- A monitoring dashboard (`gold_customer_rfm Monitoring`) with column distributions
+- Drift alerts when RFM segment distributions shift between runs
+
+---
+
+## Streamlit App (Lakebase)
+
+The `apps/retail_insights` Streamlit app connects to Lakebase Postgres and serves:
+- Revenue trends by category and month
+- Store leaderboard with region filter
+- RFM segment distribution + avg spend
+- Product performance with margin analysis
+
+### Auth pattern
+
+The app's auto-generated service principal cannot access Lakebase directly (Lakebase
+validates at the Databricks auth layer, not the Postgres role level). The solution:
+
+1. Owner's PAT is stored in Databricks Secrets (`scope=retail-insights`, `key=lakebase-token`)
+2. The SP fetches the PAT and constructs a user-level `WorkspaceClient`
+3. M2M env vars (`DATABRICKS_CLIENT_ID`, `DATABRICKS_CLIENT_SECRET`) are temporarily popped
+   before construction to avoid the "more than one auth method" SDK error
+
+### Deploy the app
+
+```bash
+databricks bundle run retail_insights
+```
 
 ---
 
@@ -293,18 +383,19 @@ flowchart LR
 **Local tests** verify pure business logic (DQ predicates, RFM segment rules, revenue math)
 without a JVM, making CI fast and reliable.
 
-**Integration tests** run as the final pipeline task and assert:
-- Silver tables pass all DQ rules (no nulls, no out-of-range values)
-- `line_total` formula matches expected values
-- `unit_price` stays within 95–100 % of the catalog price
-- Gold `gross_profit` is positive for all products
+**Integration tests** run as the final pipeline task (quality gate before `lakebase_sync`) and assert:
+- Silver tables pass all DQ rules (no nulls, no out-of-range values, valid emails)
+- `line_total` formula matches expected values within 1 cent
+- `unit_price` stays within 95–100 % of catalog price
+- Gold `gross_profit` is positive for > 90 % of products
 - CDF is enabled on all Gold tables
+- RFM segments cover all customers with completed orders
 
 ---
 
 ## Key Design Decisions
 
-### `enriched_items` temp view (Step 5)
+### `enriched_items` temp view
 
 All four Gold queries once re-scanned `silver_orders` and `silver_order_items`
 independently. A single `CREATE OR REPLACE TEMP VIEW enriched_items` with the
@@ -320,21 +411,27 @@ high-cardinality partitions.
 ### Zero-downtime Lakebase sync
 
 The sync notebook writes to `{table}_staging`, then performs an atomic rename
-per table inside a transaction. App queries to Postgres never see a "table does
-not exist" gap between sync runs.
+per table. App queries to Postgres never see a "table does not exist" gap.
+Monitor output tables (`_profile_metrics`, `_drift_metrics`) are excluded from
+sync — their struct/array columns are not compatible with psycopg2.
+
+### Column masks on Gold, not Silver
+
+PII masks belong on `gold_customer_rfm` (the analyst-facing layer), not
+`silver_customers`. Masking Silver breaks the email-validity integration test
+because the pipeline queries Silver internally without going through the mask.
 
 ### Maintenance off the critical path
 
 `OPTIMIZE` runs in a separate nightly job (`07_maintenance`), not inline in the
-pipeline. This means the pipeline finishes ~5 minutes faster per run and
-OPTIMIZE is not blocked by pipeline errors.
+pipeline. The pipeline finishes ~5 minutes faster per run and OPTIMIZE is not
+blocked by pipeline failures.
 
 ### `unit_price` tied to catalog price
 
-The original pipeline used `random.uniform(10, 500)` for `unit_price`, making
-`gross_profit` meaningless for expensive products. The fix derives `unit_price`
-as `catalog_price × uniform(0.95, 1.0)`, so unit prices are always above cost
-(since `price > cost` is a Silver DQ rule) and `gross_profit` is reliably positive.
+`unit_price = catalog_price × uniform(0.95, 1.0)` ensures prices are always above
+cost (a Silver DQ rule), making `gross_profit` reliably positive and meaningful
+for margin analysis.
 
 ---
 
@@ -357,31 +454,23 @@ Dev and prod write to different schemas. A prod deploy never touches dev data.
 
 ### Performance
 
-| Metric | Before optimization | After optimization |
+| Metric | Before | After |
 |---|---|---|
 | Silver table scans (per pipeline) | 10 re-scans post-upsert | 0 (counts captured pre-upsert) |
 | Gold table scans of orders + items | 4× each | 1× via `enriched_items` view |
 | OPTIMIZE blocking pipeline | Yes (~5 min) | No (nightly maintenance job) |
-| Lakebase write method | `to_sql()` 1 row/call | `to_sql(chunksize=5000)` |
-
-### Scalability (Databricks free edition)
-
-| Concern | Current | Recommendation |
-|---|---|---|
-| Data volume | 10K orders (demo) | Configurable via `num_orders` widget; 1M+ tested on paid tier |
-| Liquid Clustering | Enabled on all Silver + Gold tables | Auto-rebalancing handles growth without manual `ZORDER` |
-| Serverless constraints | No `cache()`, no generic JDBC | Documented with comments; switchable on classic compute |
-| Lakebase sync | `toPandas()` collects to driver | Sufficient for Gold table sizes; JDBC available on classic compute |
+| Lakebase sync downtime | Table dropped and recreated | Atomic staging rename — zero downtime |
 
 ### Quality
 
 - 95 local unit tests cover DQ predicates, RFM rules, and revenue math
-- Integration tests run as final pipeline task and fail-fast on data anomalies
+- Integration tests gate `lakebase_sync` — no bad data reaches Postgres
 - `gross_profit <= 0` check in Gold notebook and integration tests catches pricing regressions
 - Silver filter rules reject nulls, invalid emails, out-of-range ages, negative costs
+- Lakehouse Monitor auto-detects RFM distribution drift between pipeline runs
 
 ### Cost (Databricks free edition)
 
 - All tasks use **serverless compute** — no cluster startup overhead, billed per DBU-second
 - OPTIMIZE and ANALYZE are off the critical path to avoid wasting DBUs after every run
-- Widgets allow scaling `num_orders` down (e.g. 1000) for development iteration without a full dataset
+- Widgets allow scaling `num_orders` down (e.g. 1000) for development iteration
