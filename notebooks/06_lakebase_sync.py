@@ -50,6 +50,9 @@ project_id = dbutils.widgets.get("project_id")
 GOLD_TABLES = sorted(
     t.name for t in spark.catalog.listTables(f"{catalog}.{schema}")
     if t.name.startswith("gold_")
+    # Exclude Lakehouse Monitor output tables (complex struct columns, not app-facing)
+    and "_profile_metrics" not in t.name
+    and "_drift_metrics"   not in t.name
 )
 print(f"Gold tables to sync ({len(GOLD_TABLES)}):")
 for t in GOLD_TABLES:

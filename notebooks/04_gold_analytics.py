@@ -258,6 +258,14 @@ spark.sql(f"""
 
 # COMMAND ----------
 
+# ── Remove any residual masks from silver_customers (pipeline-internal table) ─
+# Masks belong on the Gold/serving layer, not Silver. Drop idempotently.
+for col in ("email", "full_name"):
+    try:
+        spark.sql(f"ALTER TABLE {tbl('silver_customers')} ALTER COLUMN {col} DROP MASK")
+    except Exception:
+        pass  # no mask present — safe to ignore
+
 # ── PII tags on silver_customers ─────────────────────────────────────────────
 for col in ("email", "full_name"):
     spark.sql(f"""

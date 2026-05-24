@@ -91,11 +91,11 @@ print("✓ PII masking function created")
 # Create the retail_iq_analysts group if it doesn't exist — analysts placed in
 # this group can read unmasked PII columns.
 from databricks.sdk import WorkspaceClient
-from databricks.sdk.errors import ResourceAlreadyExists
+from databricks.sdk.errors import ResourceAlreadyExists, ResourceConflict
 
 w = WorkspaceClient()
 try:
     group = w.groups.create(display_name="retail_iq_analysts")
     print(f"✓ Group 'retail_iq_analysts' created (id={group.id})")
-except ResourceAlreadyExists:
+except (ResourceAlreadyExists, ResourceConflict):
     print("– Group 'retail_iq_analysts' already exists")
