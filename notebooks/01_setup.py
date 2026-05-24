@@ -73,12 +73,29 @@ for t in GOLD_TABLES:
 
 # Masking function — members of retail_iq_analysts group see real values;
 # everyone else sees '****'.  CREATE OR REPLACE makes this idempotent.
+# Admins and members of retail_iq_analysts see real values; everyone else sees '****'.
+# Admins are included so pipeline runs and integration tests are not masked.
 spark.sql(f"""
   CREATE OR REPLACE FUNCTION `{catalog}`.`{schema}`.mask_pii(val STRING)
   RETURNS STRING
   RETURN CASE
-    WHEN is_account_group_member('retail_iq_analysts') THEN val
+    WHEN is_account_group_member('admins')              THEN val
+    WHEN is_account_group_member('retail_iq_analysts')  THEN val
     ELSE '****'
   END
 """)
 print("✓ PII masking function created")
+
+# COMMAND ----------
+
+# Create the retail_iq_analysts group if it doesn't exist — analysts placed in
+# this group can read unmasked PII columns.
+from databricks.sdk import WorkspaceClient
+from databricks.sdk.errors import ResourceAlreadyExists
+
+w = WorkspaceClient()
+try:
+    group = w.groups.create(display_name="retail_iq_analysts")
+    print(f"✓ Group 'retail_iq_analysts' created (id={group.id})")
+except ResourceAlreadyExists:
+    print("– Group 'retail_iq_analysts' already exists")

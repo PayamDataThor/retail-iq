@@ -266,14 +266,16 @@ for col in ("email", "full_name"):
     """)
 print("✓ PII tags set on silver_customers.email and full_name")
 
-# ── Column masks (requires masking function from 01_setup) ───────────────────
+# ── Column masks on gold_customer_rfm (the analyst-facing serving layer) ─────
+# Silver tables are pipeline-internal; masking the serving/Gold layer is the
+# correct governance pattern — analysts query Gold, not Silver directly.
 for col in ("email", "full_name"):
     spark.sql(f"""
-      ALTER TABLE {tbl('silver_customers')}
+      ALTER TABLE {tbl('gold_customer_rfm')}
       ALTER COLUMN {col}
       SET MASK `{catalog}`.`{schema}`.mask_pii
     """)
-print("✓ Column masks applied — non-analysts see '****'")
+print("✓ Column masks applied to gold_customer_rfm — non-analysts see '****'")
 
 # ── Table-level comments ─────────────────────────────────────────────────────
 table_comments = {

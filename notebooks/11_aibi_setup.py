@@ -106,7 +106,7 @@ dashboard_spec = {
                 {
                     "widget": {
                         "name": "revenue_trend",
-                        "queries": [{"name": "q", "query": {"datasetName": "ds_revenue", "fields": [{"name": "period"}, {"name": "gross_revenue"}, {"name": "category"}], "disaggregated": False}}],
+                        "queries": [{"name": "q", "query": {"datasetName": "ds_revenue", "fields": [{"name": "period", "expression": "period"}, {"name": "gross_revenue", "expression": "gross_revenue"}, {"name": "category", "expression": "category"}], "disaggregated": False}}],
                         "spec": {
                             "version": 3,
                             "widgetType": "bar",
@@ -123,7 +123,7 @@ dashboard_spec = {
                 {
                     "widget": {
                         "name": "revenue_by_category_pie",
-                        "queries": [{"name": "q", "query": {"datasetName": "ds_products", "fields": [{"name": "category"}, {"name": "gross_revenue"}], "disaggregated": False}}],
+                        "queries": [{"name": "q", "query": {"datasetName": "ds_products", "fields": [{"name": "category", "expression": "category"}, {"name": "gross_revenue", "expression": "gross_revenue"}], "disaggregated": False}}],
                         "spec": {
                             "version": 3,
                             "widgetType": "pie",
@@ -145,7 +145,7 @@ dashboard_spec = {
                 {
                     "widget": {
                         "name": "top_stores",
-                        "queries": [{"name": "q", "query": {"datasetName": "ds_stores", "fields": [{"name": "store_name"}, {"name": "total_revenue"}, {"name": "region"}], "disaggregated": False}}],
+                        "queries": [{"name": "q", "query": {"datasetName": "ds_stores", "fields": [{"name": "store_name", "expression": "store_name"}, {"name": "total_revenue", "expression": "total_revenue"}, {"name": "region", "expression": "region"}], "disaggregated": False}}],
                         "spec": {
                             "version": 3,
                             "widgetType": "bar",
@@ -168,7 +168,7 @@ dashboard_spec = {
                 {
                     "widget": {
                         "name": "rfm_segments",
-                        "queries": [{"name": "q", "query": {"datasetName": "ds_rfm", "fields": [{"name": "rfm_segment"}, {"name": "customers"}, {"name": "avg_spend"}], "disaggregated": False}}],
+                        "queries": [{"name": "q", "query": {"datasetName": "ds_rfm", "fields": [{"name": "rfm_segment", "expression": "rfm_segment"}, {"name": "customers", "expression": "customers"}, {"name": "avg_spend", "expression": "avg_spend"}], "disaggregated": False}}],
                         "spec": {
                             "version": 3,
                             "widgetType": "bar",
@@ -185,7 +185,7 @@ dashboard_spec = {
                 {
                     "widget": {
                         "name": "avg_spend_by_segment",
-                        "queries": [{"name": "q", "query": {"datasetName": "ds_rfm", "fields": [{"name": "rfm_segment"}, {"name": "avg_spend"}], "disaggregated": False}}],
+                        "queries": [{"name": "q", "query": {"datasetName": "ds_rfm", "fields": [{"name": "rfm_segment", "expression": "rfm_segment"}, {"name": "avg_spend", "expression": "avg_spend"}], "disaggregated": False}}],
                         "spec": {
                             "version": 3,
                             "widgetType": "bar",
@@ -204,38 +204,42 @@ dashboard_spec = {
     ],
 }
 
-# ── Create or update the dashboard ──────────────────────────────────────────
-existing = [d for d in w.lakeview.list() if d.display_name == DASHBOARD_NAME]
+# ── Create or update the dashboard via REST API ───────────────────────────────
+# Using api_client.do() directly — the SDK wrapper's keyword-arg signature
+# varies across installed versions.
+host = w.config.host.rstrip("/")
+
+existing_list = w.api_client.do("GET", "/api/2.0/lakeview/dashboards").get("dashboards", [])
+existing = next((d for d in existing_list if d.get("display_name") == DASHBOARD_NAME), None)
 
 if existing:
-    dashboard = w.lakeview.update(
-        dashboard_id=existing[0].dashboard_id,
-        display_name=DASHBOARD_NAME,
-        serialized_dashboard=json.dumps(dashboard_spec),
-    )
+    dashboard_id = existing["dashboard_id"]
+    w.api_client.do("PATCH", f"/api/2.0/lakeview/dashboards/{dashboard_id}", body={
+        "display_name":          DASHBOARD_NAME,
+        "serialized_dashboard":  json.dumps(dashboard_spec),
+        "warehouse_id":          warehouse.id,
+    })
     print(f"✓ Dashboard updated: {DASHBOARD_NAME}")
 else:
-    dashboard = w.lakeview.create(
-        display_name=DASHBOARD_NAME,
-        serialized_dashboard=json.dumps(dashboard_spec),
-        warehouse_id=warehouse.id,
-    )
+    result = w.api_client.do("POST", "/api/2.0/lakeview/dashboards", body={
+        "display_name":         DASHBOARD_NAME,
+        "serialized_dashboard": json.dumps(dashboard_spec),
+        "warehouse_id":         warehouse.id,
+    })
+    dashboard_id = result["dashboard_id"]
     print(f"✓ Dashboard created: {DASHBOARD_NAME}")
 
-# ── Publish so it's visible to stakeholders ──────────────────────────────────
-from databricks.sdk.service.dashboards import PublishRequest
+# ── Publish ───────────────────────────────────────────────────────────────────
 try:
-    w.lakeview.publish(
-        dashboard_id=dashboard.dashboard_id,
-        warehouse_id=warehouse.id,
-        embed_credentials=False,
-    )
-    print(f"✓ Dashboard published")
+    w.api_client.do("POST", f"/api/2.0/lakeview/dashboards/{dashboard_id}/published", body={
+        "warehouse_id":      warehouse.id,
+        "embed_credentials": False,
+    })
+    print("✓ Dashboard published")
 except Exception as e:
     print(f"– Publish skipped: {e}")
 
-host = w.config.host.rstrip("/")
-print(f"\n Dashboard URL: {host}/dashboardsv3/{dashboard.dashboard_id}")
+print(f"\n  Dashboard URL: {host}/dashboardsv3/{dashboard_id}")
 
 # COMMAND ----------
 # MAGIC %md
