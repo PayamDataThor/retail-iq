@@ -233,7 +233,7 @@ else:
 try:
     w.api_client.do("POST", f"/api/2.0/lakeview/dashboards/{dashboard_id}/published", body={
         "warehouse_id":      warehouse.id,
-        "embed_credentials": False,
+        "embed_credentials": True,
     })
     print("✓ Dashboard published")
 except Exception as e:
