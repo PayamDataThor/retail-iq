@@ -1,0 +1,7 @@
+# Run locally (no Spark/Java required):
+#   python3 -m pip install -r requirements-test.txt
+#   pytest -m "not spark"
+#
+# Run Spark-dependent tests inside Databricks:
+#   databricks bundle run retail_pipeline --only run_tests
+pytest>=9.0.0

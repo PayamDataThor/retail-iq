@@ -1,0 +1,27 @@
+bundle:
+  name: retail-iq
+
+variables:
+  catalog:
+    description: Unity Catalog name
+    default: main
+  schema:
+    description: Schema for retail analytics tables
+    default: retail_iq
+
+include:
+  - resources/*.yml
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://dbc-85cda355-cf23.cloud.databricks.com
+
+  prod:
+    mode: production
+    variables:
+      schema: retail_iq_prod   # isolated from dev — prod runs never touch retail_iq
+    workspace:
+      host: https://dbc-85cda355-cf23.cloud.databricks.com

@@ -1,0 +1,14 @@
+resources:
+  apps:
+    retail_insights:
+      name: "retail-insights"
+      description: "RetailIQ business insights dashboard — connected to Lakebase"
+      source_code_path: ../apps/retail_insights
+      config:
+        env:
+          - name: LAKEBASE_PROJECT
+            value: "retail-iq-db"
+          - name: CATALOG
+            value: "${var.catalog}"
+          - name: SCHEMA
+            value: "${var.schema}"

@@ -1,0 +1,146 @@
+resources:
+  jobs:
+    retail_pipeline:
+      name: "RetailIQ Analytics Pipeline [${bundle.target}]"
+      description: "Bronze → Silver → Gold medallion pipeline with Lakebase sync for retail analytics"
+
+      environments:
+        - environment_key: serverless
+          spec:
+            client: "2"
+
+      tasks:
+        - task_key: setup
+          description: "Create catalog/schema and validate environment"
+          environment_key: serverless
+          max_retries: 3
+          min_retry_interval_millis: 30000
+          timeout_seconds: 300
+          notebook_task:
+            notebook_path: ${workspace.file_path}/notebooks/01_setup
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+
+        - task_key: data_generation
+          description: "Generate synthetic retail dim/fact data into Bronze Delta tables"
+          depends_on:
+            - task_key: setup
+          environment_key: serverless
+          max_retries: 3
+          min_retry_interval_millis: 30000
+          timeout_seconds: 600
+          notebook_task:
+            notebook_path: ${workspace.file_path}/notebooks/02_data_generation
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+              num_customers: "1000"
+              num_products: "100"
+              num_stores: "20"
+              num_orders: "10000"
+
+        - task_key: silver_transforms
+          description: "Validate, deduplicate, and enrich Bronze → Silver"
+          depends_on:
+            - task_key: data_generation
+          environment_key: serverless
+          max_retries: 3
+          min_retry_interval_millis: 30000
+          timeout_seconds: 600
+          notebook_task:
+            notebook_path: ${workspace.file_path}/notebooks/03_silver_transforms
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+
+        - task_key: gold_analytics
+          description: "Aggregate KPIs and RFM segments → Gold tables"
+          depends_on:
+            - task_key: silver_transforms
+          environment_key: serverless
+          max_retries: 3
+          min_retry_interval_millis: 30000
+          timeout_seconds: 600
+          notebook_task:
+            notebook_path: ${workspace.file_path}/notebooks/04_gold_analytics
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+
+        - task_key: visualization
+          description: "Render business charts from Gold tables"
+          depends_on:
+            - task_key: gold_analytics
+          environment_key: serverless
+          max_retries: 3
+          min_retry_interval_millis: 30000
+          timeout_seconds: 300
+          notebook_task:
+            notebook_path: ${workspace.file_path}/notebooks/05_visualization
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+
+        - task_key: run_tests
+          description: "Integration tests — quality gate before Lakebase sync"
+          depends_on:
+            - task_key: gold_analytics
+          environment_key: serverless
+          max_retries: 3
+          timeout_seconds: 600
+          notebook_task:
+            notebook_path: ${workspace.file_path}/notebooks/08_run_tests
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+
+        - task_key: lakebase_sync
+          description: "Sync Gold tables to Lakebase for app-layer serving"
+          depends_on:
+            - task_key: run_tests
+          environment_key: serverless
+          max_retries: 3
+          min_retry_interval_millis: 30000
+          timeout_seconds: 900    # extra headroom for Lakebase cold-start
+          notebook_task:
+            notebook_path: ${workspace.file_path}/notebooks/06_lakebase_sync
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+
+        - task_key: dashboard
+          description: "KPI dashboard and solution evaluation report"
+          depends_on:
+            - task_key: gold_analytics
+          environment_key: serverless
+          max_retries: 3
+          min_retry_interval_millis: 30000
+          timeout_seconds: 300
+          notebook_task:
+            notebook_path: ${workspace.file_path}/notebooks/09_dashboard
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+
+        - task_key: aibi_setup
+          description: "Create AI/BI Dashboard and Genie Space on Gold tables"
+          depends_on:
+            - task_key: gold_analytics
+          environment_key: serverless
+          max_retries: 3
+          min_retry_interval_millis: 30000
+          timeout_seconds: 300
+          notebook_task:
+            notebook_path: ${workspace.file_path}/notebooks/11_aibi_setup
+            base_parameters:
+              catalog: "${var.catalog}"
+              schema: "${var.schema}"
+
+      email_notifications:
+        on_failure:
+          - p.amani@gmail.com
+        no_alert_for_skipped_runs: true
+
+      queue:
+        enabled: true
