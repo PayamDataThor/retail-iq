@@ -267,36 +267,46 @@ CURATED_QUESTIONS = [
 ]
 
 # ── Create Genie space via REST API ──────────────────────────────────────────
-# SDK method w.genie.create_space() may not exist in all SDK versions;
-# use the underlying api_client for reliable access.
+# serialized_space rules (discovered empirically — not fully documented):
+#   - Must be a JSON string (not an object)
+#   - version must be 2
+#   - data_sources.tables uses field "identifier", not "table_identifier"
+#   - data_sources.tables must be sorted alphabetically by identifier
+#   - config.sample_questions.question must be an array of strings
 try:
-    existing_spaces = w.api_client.do("GET", "/api/2.0/genie/spaces").get("genie_spaces", [])
+    resp = w.api_client.do("GET", "/api/2.0/genie/spaces")
+    existing_spaces = resp.get("spaces") or resp.get("genie_spaces") or []
     existing_genie  = next((s for s in existing_spaces if s.get("title") == GENIE_TITLE), None)
 
     if existing_genie:
         space_id = existing_genie["space_id"]
         print(f"– Genie space already exists (id={space_id})")
     else:
+        serialized_space = json.dumps({
+            "version": 2,
+            "config": {
+                "sample_questions": [
+                    {"id": f"q{str(i).zfill(31)}", "question": [q]}
+                    for i, q in enumerate(CURATED_QUESTIONS, 1)
+                ]
+            },
+            "data_sources": {
+                # tables must be sorted alphabetically by identifier
+                "tables": [{"identifier": t} for t in sorted(GOLD_TABLES)]
+            }
+        }, separators=(',', ':'))
+
         result = w.api_client.do("POST", "/api/2.0/genie/spaces", body={
-            "title":             GENIE_TITLE,
-            "description":       "Ask questions about retail revenue, store performance, product margins, and customer segments in plain English.",
-            "warehouse_id":      warehouse.id,
-            "table_identifiers": GOLD_TABLES,
+            "title":            GENIE_TITLE,
+            "description":      "Ask questions about retail revenue, store performance, product margins, and customer segments in plain English.",
+            "warehouse_id":     warehouse.id,
+            "serialized_space": serialized_space,
         })
         space_id = result.get("space_id") or result.get("id")
         print(f"✓ Genie space created: {GENIE_TITLE}")
 
-    # ── Seed curated questions ────────────────────────────────────────────────
     if space_id:
-        for question in CURATED_QUESTIONS:
-            try:
-                w.api_client.do("POST", f"/api/2.0/genie/spaces/{space_id}/questions", body={
-                    "question": question,
-                })
-            except Exception:
-                pass  # curated questions are best-effort
-        print(f"✓ {len(CURATED_QUESTIONS)} curated questions seeded")
-        print(f"\n Genie URL: {host}/genie/spaces/{space_id}")
+        print(f"\n  Genie URL: {host}/genie/spaces/{space_id}")
 
 except Exception as e:
     print(f"⚠ Genie setup skipped: {e}")
